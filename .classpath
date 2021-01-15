@@ -16,5 +16,6 @@
 	<classpathentry kind="con" path="MULE_RUNTIME"/>
 	<classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER"/>
 	<classpathentry kind="con" path="MULE_LIB/Secure Property Placeholder/org.mule.tooling.ui.contribution.secure-property-placeholder.3.7.3"/>
+	<classpathentry kind="lib" path="/Users/vlankacherukuri/Integrations/duo-synchronicity-billing-prc-mspbilling/duo-synchronicity-billing-prc-mspbilling/src/main/app/lib/mysql-connector-java-5.1.49.jar"/>
 	<classpathentry kind="output" path="target/classes"/>
 </classpath>
