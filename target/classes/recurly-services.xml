@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:validation="http://www.mulesoft.org/schema/mule/validation" xmlns:scripting="http://www.mulesoft.org/schema/mule/scripting" xmlns:jms="http://www.mulesoft.org/schema/mule/jms" xmlns:json="http://www.mulesoft.org/schema/mule/json" xmlns:mulexml="http://www.mulesoft.org/schema/mule/xml" xmlns:dw="http://www.mulesoft.org/schema/mule/ee/dw" xmlns:metadata="http://www.mulesoft.org/schema/mule/metadata" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:tracking="http://www.mulesoft.org/schema/mule/ee/tracking" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:spring="http://www.springframework.org/schema/beans" 
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/ee/tracking http://www.mulesoft.org/schema/mule/ee/tracking/current/mule-tracking-ee.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/ee/dw http://www.mulesoft.org/schema/mule/ee/dw/current/dw.xsd
+http://www.mulesoft.org/schema/mule/xml http://www.mulesoft.org/schema/mule/xml/current/mule-xml.xsd
+http://www.mulesoft.org/schema/mule/json http://www.mulesoft.org/schema/mule/json/current/mule-json.xsd
+http://www.mulesoft.org/schema/mule/jms http://www.mulesoft.org/schema/mule/jms/current/mule-jms.xsd
+http://www.mulesoft.org/schema/mule/scripting http://www.mulesoft.org/schema/mule/scripting/current/mule-scripting.xsd
+http://www.mulesoft.org/schema/mule/validation http://www.mulesoft.org/schema/mule/validation/current/mule-validation.xsd">
+    <flow name="recurly-services:onetime-CreditCard-Refund" processingStrategy="synchronous">
+        <logger message="Starting CC Refund Process" level="INFO" category="" doc:name="Log - Start"/>
+        <set-variable variableName="curr_invoice" value="#[payload]" doc:name="Variable:curr_invoice"/>
+        <dw:transform-message doc:name="Transform Message">
+            <dw:set-payload><![CDATA[%dw 1.0
+%output application/xml
+---
+"invoice" : {
+	"amount_in_cents":"",
+	"refund_method": ""
+}]]></dw:set-payload>
+        </dw:transform-message>
+        <http:request config-ref="HTTPS_Recurly_Request_Configuration" path="/invoices/#[flowVars.curr_invoice.Invoice_Num]/refund" method="POST" doc:name="HTTP - Post Single MSP Charge">
+            <http:request-builder>
+                <http:header headerName="Authorization" value="${recurly.authorization}"/>
+                <http:header headerName="Accept" value="${recurly.accept}"/>
+                <http:header headerName="Content-Type" value="${recurly.content.type}"/>
+                <http:header headerName="X-Api-Version" value="${recurly.xapi.version}"/>
+            </http:request-builder>
+        </http:request>
+        <dw:transform-message doc:name="Transform Message">
+            <dw:set-payload><![CDATA[%dw 1.0
+%output application/java
+%function extractTransId(url) (url splitBy '/')[-1]
+%function extractInvoiceId(url) (url splitBy '/')[-1]
+---
+{
+(TransactionNum: extractTransId(payload.transaction.@href)) when payload.transaction?,
+(InvoiceNum: extractInvoiceId(payload.transaction.invoice.@href)) when payload.transaction.invoice?
+}]]></dw:set-payload>
+            <dw:set-session-variable variableName="TransactionAndInvoiceCreated"><![CDATA[%dw 1.0
+%output application/java
+%function extractTransId(url) (url splitBy '/')[-1]
+%function extractInvoiceId(url) (url splitBy '/')[-1]
+---
+{
+(TransactionNum: extractTransId(payload.transaction.@href)) when payload.transaction?,
+(InvoiceNum: extractInvoiceId(payload.transaction.invoice.@href)) when payload.transaction.invoice?
+}]]></dw:set-session-variable>
+        </dw:transform-message>
+        <message-properties-transformer scope="invocation" doc:name="Message Properties">
+            <add-message-property key="ISDB_Dump" value="#[' ']"/>
+            <add-message-property key="ISDB_Akey" value="#[flowVars.curr_invoice.Akey]"/>
+            <add-message-property key="ISDB_MessageText" value="#[flowVars.curr_invoice.Invoice_Num]"/>
+            <add-message-property key="ISDB_MessageDesc" value="MSP account refund processed ."/>
+            <add-message-property key="ISDB_MessageType" value="MSPREFUNDPROCESSED"/>
+        </message-properties-transformer>
+        <flow-ref name="integration-statusdb-services:logFinancialError" doc:name="integration-statusdb-services:logFinancialError"/>
+        <logger message="Ending CC Charge Process" level="INFO" category="" doc:name="Log - End"/>
+        <catch-exception-strategy doc:name="Catch Exception Strategy">
+            <dw:transform-message doc:name="Transform Message">
+                <dw:set-payload><![CDATA[%dw 1.0
+%output application/java
+---
+{
+(ErrorCode: (payload.errors.transaction_error.error_code)) when payload.errors.transaction_error?,
+(GatewayErrorCode: (payload.errors.transaction_error.gateway_error_code)) when payload.errors.transaction_error?,
+(MerchantMessage: (payload.errors.transaction_error.merchant_message)) when payload.errors.transaction_error?,
+(MissingBillingSymbol: (payload.errors.error.@symbol)) when payload.errors.error?
+}]]></dw:set-payload>
+            </dw:transform-message>
+            <choice doc:name="Choice">
+                <when expression="#[payload.size() &lt;2]">
+                    <message-properties-transformer scope="invocation" doc:name="Message Properties">
+                        <add-message-property key="ISDB_Akey" value="#[sessionVars.AccountNbr]"/>
+                        <add-message-property key="ISDB_Dump" value="#[' ']"/>
+                        <add-message-property key="ISDB_MessageText" value="#[' ']"/>
+                        <add-message-property key="ISDB_MessageDesc" value="MSP account refund skipped ."/>
+                        <add-message-property key="ISDB_MessageType" value="MSPREFUNDSKIPPED"/>
+                    </message-properties-transformer>
+                </when>
+                <otherwise>
+                    <message-properties-transformer scope="invocation" doc:name="Message Properties">
+                        <add-message-property key="ISDB_Akey" value="#[sessionVars.AccountNbr]"/>
+                        <add-message-property key="ISDB_MessageDesc" value="#[payload.ErrorCode]"/>
+                        <add-message-property key="ISDB_Dump" value="#[payload.MerchantMessage]"/>
+                        <add-message-property key="ISDB_MessageText" value="#[payload.GatewayErrorCode]"/>
+                        <add-message-property key="ISDB_MessageType" value="MSPREFUNDFAILED"/>
+                    </message-properties-transformer>
+                </otherwise>
+            </choice>
+            <flow-ref name="integration-statusdb-services:logFinancialError" doc:name="integration-statusdb-services:logFinancialError"/>
+            <set-session-variable variableName="CCProcessed" value="#[java.lang.Boolean.FALSE]" doc:name="Session Variable - CCFound"/>
+        </catch-exception-strategy>
+    </flow>
+</mule>

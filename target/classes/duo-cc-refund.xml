@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:dw="http://www.mulesoft.org/schema/mule/ee/dw" xmlns:tracking="http://www.mulesoft.org/schema/mule/ee/tracking" xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:spring="http://www.springframework.org/schema/beans" 
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/ee/tracking http://www.mulesoft.org/schema/mule/ee/tracking/current/mule-tracking-ee.xsd
+http://www.mulesoft.org/schema/mule/ee/dw http://www.mulesoft.org/schema/mule/ee/dw/current/dw.xsd">
+    <flow name="duo-cc-refund-prc:main">
+        <poll doc:name="Poll">
+            <fixed-frequency-scheduler frequency="1000" startDelay="10000" timeUnit="DAYS"/>
+            <logger level="INFO" doc:name="Logger"/>
+        </poll>
+        <message-properties-transformer scope="invocation" doc:name="Message Properties - Integration code">
+            <add-message-property key="ISDB_LogType" value="MSPRECURLYCHARGERFND"/>
+            <add-message-property key="ISDB_Integration_Code" value="76"/>
+        </message-properties-transformer>
+        <flow-ref name="integration-statusdb-services:getSyncMode" doc:name="integration-statusdb-services:getSyncMode"/>
+        <set-session-variable variableName="Syncmode" value="#[payload.first['SyncMode']]" doc:name="Session Variable - Syncmode"/>
+        <flow-ref name="integration-statusdb-services:ResetSyncMode" doc:name="integration-statusdb-services:ResetSyncMode"/>
+        <flow-ref name="integration-statusdb-services:getIntegrationEnabledFlag" doc:name="integration-statusdb-services:getIntegrationEnabledFlag"/>
+        <choice doc:name="Choice">
+            <when expression="#[payload[0].Total &gt; 0]">
+                <choice doc:name="Choice">
+                    <when expression="#[sessionVars.Syncmode == 5]">
+                        <enricher target="#[flowVars.ISDB_JobID]" doc:name="Message Enricher">
+                            <flow-ref name="integration-statusdb-services:createJob" doc:name="integration-statusdb-services:createJob"/>
+                        </enricher>
+                        <flow-ref name="integration-statusdb-services:getResubmissionData" doc:name="integration-statusdb-services:getResubmissionData"/>
+                        <dw:transform-message doc:name="Format Payload">
+                            <dw:set-payload><![CDATA[%dw 1.0
+%output application/java
+---
+payload map {
+	Akey:$.Submission_Value,
+	Invoice_Num : $.Submission_Value2
+}]]></dw:set-payload>
+                        </dw:transform-message>
+                    </when>
+                    <otherwise>
+                          <set-variable variableName="ISDB_Feature_Code" value="JOBID" doc:name="Variable - ISDB_Feature_Code"/>
+                			 <flow-ref name="integration-statusdb-services:getIntegrationFeatureFlag" doc:name="integration-statusdb-services:getIntegrationFeatureFlag"/>
+                        <dw:transform-message doc:name="ISDB_Refund_JobID">
+                            <dw:set-variable variableName="ISDB_Refund_JobID"><![CDATA[%dw 1.0
+%output application/java
+---
+payload[0].Feature_Value when payload[0].Feature_Enabled==1 and payload[0].Feature_Value != null
+otherwise 0]]></dw:set-variable>
+                        </dw:transform-message>
+                        <choice doc:name="Choice">
+                            <when expression="#[flowVars.ISDB_Refund_JobID &gt; 0]">
+                                <enricher target="#[flowVars.ISDB_JobID]" doc:name="Message Enricher">
+                                    <flow-ref name="integration-statusdb-services:createJob" doc:name="integration-statusdb-services:createJob"/>
+                                </enricher>
+                                <message-properties-transformer scope="invocation" doc:name="Message Properties">
+                                    <add-message-property key="ISDB_Dump" value="#[' ']"/>
+                                    <add-message-property key="ISDB_Akey" value="#['']"/>
+                                    <add-message-property key="ISDB_MessageType" value="Start"/>
+                                    <add-message-property key="ISDB_MessageText" value="#['Starting Refund using CCs in JobID : ' + flowVars.ISDB_Refund_JobID]"/>
+                                    <add-message-property key="ISDB_MessageDesc" value="#['Starting Refund using CCs in JobID : ' + flowVars.ISDB_Refund_JobID]"/>
+                                </message-properties-transformer>
+                                <flow-ref name="integration-statusdb-services:logFinancialError" doc:name="integration-statusdb-services:logFinancialError"/>
+                                <until-successful maxRetries="5" synchronous="true" doc:name="Until Successful">
+                                    <db:select config-ref="MySQL_ISDB_Configuration" doc:name="Get Charged CC">
+                                        <db:parameterized-query><![CDATA[select * from Job_Log where fk_JobID = #[flowVars.ISDB_Refund_JobID] and Message_Type = 'MSPRECURLYCHARGEADD';]]></db:parameterized-query>
+                                    </db:select>
+                                </until-successful>
+                                
+                            </when>
+                            <otherwise>
+                                <logger message="JobID for Recurly Charges Not Found." level="INFO" doc:name="Logger"/>
+                            </otherwise>
+                        </choice>
+                    </otherwise>
+                </choice>
+                <choice doc:name="Choice">
+                    <when expression="#[payload.size() &gt;0]">
+                        <foreach collection="payload" doc:name="For Each">
+                            <flow-ref name="recurly-services:onetime-CreditCard-Refund" doc:name="recurly-services:onetime-CreditCard-Refund"/>
+                        </foreach>
+                    </when>
+                    <otherwise>
+                        <logger message="No invoices found for processing" level="INFO" doc:name="Logger"/>
+                    </otherwise>
+                </choice>
+                <set-variable variableName="ISDB_JobStatus" value="#[2]" doc:name="Variable - ISDB_JobStatus"/>
+                <flow-ref name="integration-statusdb-services:updateJobStatus" doc:name="integration-statusdb-services:updateJobStatus"/>
+            </when>
+            <otherwise>
+                <logger message="Integration not enabled." level="INFO" doc:name="Logger"/>
+            </otherwise>
+        </choice>
+        <logger message="Completed Recurly Refund Process." level="INFO" doc:name="Logger"/>
+    </flow>
+</mule>
